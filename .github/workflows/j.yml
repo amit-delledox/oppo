@@ -1,42 +1,16 @@
-on: [push]
 jobs:
-  find:
-    runs-on: self-hosted
-    permissions:
-      actions: write      # ← test with this
+  remove-runner:
+    runs-on: ubuntu-latest
     steps:
-      - name: Test actions:write scope vs runner token endpoints
+      - name: Get removal token
         run: |
-          echo "=== Repo-level remove-token with actions:write ==="
-          curl -s -w "\nHTTP: %{http_code}" -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/runners/remove-token
-
-          echo ""
-          echo "=== Repo-level registration-token with actions:write ==="
-          curl -s -w "\nHTTP: %{http_code}" -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token
-
-          echo ""
-          echo "=== Org-level remove-token with actions:write ==="
-          curl -s -w "\nHTTP: %{http_code}" -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/remove-token
-
-          echo ""
-          echo "=== Org-level registration-token with actions:write ==="
-          curl -s -w "\nHTTP: %{http_code}" -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token
-
-          echo ""
-          echo "=== What scopes does this GITHUB_TOKEN actually have? ==="
-          curl -s -I \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ github.repository }} \
-            | grep -i x-oauth-scopes
+          REMOVAL_TOKEN=$(curl -s -X POST \
+            -H "Authorization: token ${{ secrets.ADMIN_PAT }}" \
+            https://api.github.com/orgs/poweriswill/actions/runners/remove-token \
+            | jq -r .token)
+          
+          echo "Removing runner..."
+          # accidentally or for debugging:
+          echo "Token: $REMOVAL_TOKEN"
+          
+          ./config.sh remove --token $REMOVAL_TOKEN
